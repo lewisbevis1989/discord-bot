@@ -1,68 +1,69 @@
 import discord
 from discord.ext import tasks
 from discord import app_commands
-import os
 import json
+import os
 from datetime import datetime, timedelta
+import asyncio
 
 intents = discord.Intents.default()
+intents.message_content = True
 intents.guilds = True
+intents.reactions = True
 intents.members = True
 intents.voice_states = True
-intents.message_content = True
-client = discord.Client(intents=intents)
-tree = app_commands.CommandTree(client)
 
-# File paths
+bot = discord.Client(intents=intents)
+tree = app_commands.CommandTree(bot)
+
 VOTES_FILE = "votes.json"
 VOICE_LOG = "voice_log.json"
 CHANNEL_FILE = "rating_channel.json"
 LEADERBOARD_CHANNEL_FILE = "leaderboard_channel.json"
-
-# Globals
+vote_messages = {}
 votes = {}
 voice_log = {}
-vote_messages = {}
 rating_channel_id = None
 leaderboard_channel_id = None
 EMOJIS = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣"]
 
-# Load data
+
 def load_data():
     global votes, voice_log, rating_channel_id, leaderboard_channel_id
     if os.path.exists(VOTES_FILE):
-        with open(VOTES_FILE, 'r') as f:
-            votes.update(json.load(f))
+        with open(VOTES_FILE, "r") as f:
+            votes = json.load(f)
     if os.path.exists(VOICE_LOG):
-        with open(VOICE_LOG, 'r') as f:
-            voice_log.update(json.load(f))
+        with open(VOICE_LOG, "r") as f:
+            voice_log = json.load(f)
     if os.path.exists(CHANNEL_FILE):
-        with open(CHANNEL_FILE, 'r') as f:
+        with open(CHANNEL_FILE, "r") as f:
             rating_channel_id = json.load(f).get("channel_id")
     if os.path.exists(LEADERBOARD_CHANNEL_FILE):
-        with open(LEADERBOARD_CHANNEL_FILE, 'r') as f:
+        with open(LEADERBOARD_CHANNEL_FILE, "r") as f:
             leaderboard_channel_id = json.load(f).get("channel_id")
 
-# Save data
+
 def save_data():
-    with open(VOTES_FILE, 'w') as f:
+    with open(VOTES_FILE, "w") as f:
         json.dump(votes, f)
-    with open(VOICE_LOG, 'w') as f:
+    with open(VOICE_LOG, "w") as f:
         json.dump(voice_log, f)
 
+
 def save_channel(channel_id, filename):
-    with open(filename, 'w') as f:
+    with open(filename, "w") as f:
         json.dump({"channel_id": channel_id}, f)
 
-# Track who joined VC recently
-@client.event
+
+@bot.event
 async def on_voice_state_update(member, before, after):
     if after.channel and before.channel != after.channel:
         voice_log[str(member.id)] = datetime.utcnow().isoformat()
         save_data()
 
-# Get users in VC or joined within 24h
-def get_recent_voice_users(guild):
+
+def get_recent_and_current_voice_users(guild):
     now = datetime.utcnow()
     members = set()
     for uid, timestamp in voice_log.items():
@@ -75,80 +76,125 @@ def get_recent_voice_users(guild):
             members.add(member)
     return list(members)
 
-# Slash commands
-@tree.command(name="setratingchannel", description="Set the rating channel")
+
+@tree.command(name="setratingchannel", description="Set the channel for auto-rating posts (admin only)")
 async def setratingchannel(interaction: discord.Interaction):
     if not interaction.user.guild_permissions.administrator:
-        await interaction.response.send_message("Admins only", ephemeral=True)
+        await interaction.response.send_message("❌ Admins only", ephemeral=True)
         return
+    save_channel(interaction.channel_id, CHANNEL_FILE)
     global rating_channel_id
     rating_channel_id = interaction.channel_id
-    save_channel(rating_channel_id, CHANNEL_FILE)
-    await interaction.response.send_message("✅ Rating channel set.", ephemeral=True)
+    await interaction.response.send_message("✅ This channel is now set for rating posts.")
 
-@tree.command(name="setleaderboardchannel", description="Set the leaderboard channel")
+
+@tree.command(name="setleaderboardchannel", description="Set the channel for leaderboard posts (admin only)")
 async def setleaderboardchannel(interaction: discord.Interaction):
     if not interaction.user.guild_permissions.administrator:
-        await interaction.response.send_message("Admins only", ephemeral=True)
+        await interaction.response.send_message("❌ Admins only", ephemeral=True)
         return
+    save_channel(interaction.channel_id, LEADERBOARD_CHANNEL_FILE)
     global leaderboard_channel_id
     leaderboard_channel_id = interaction.channel_id
-    save_channel(leaderboard_channel_id, LEADERBOARD_CHANNEL_FILE)
-    await interaction.response.send_message("✅ Leaderboard channel set.", ephemeral=True)
+    await interaction.response.send_message("✅ This channel is now set for leaderboard posts.")
 
-@tree.command(name="postratings", description="Manually post ratings")
+
+@tree.command(name="postratings", description="Manually post ratings for voice-active players (admin only)")
 async def postratings(interaction: discord.Interaction):
     if not interaction.user.guild_permissions.administrator:
-        await interaction.response.send_message("Admins only", ephemeral=True)
+        await interaction.response.send_message("❌ Admins only.", ephemeral=True)
+        return
+    if not rating_channel_id:
+        await interaction.response.send_message("❌ Rating channel not set.", ephemeral=True)
         return
     guild = interaction.guild
-    channel = guild.get_channel(rating_channel_id)
-    recent_members = get_recent_voice_users(guild)
+    rating_channel = guild.get_channel(rating_channel_id)
+    if not rating_channel:
+        await interaction.response.send_message("❌ Could not find the rating channel.", ephemeral=True)
+        return
+    recent_members = get_recent_and_current_voice_users(guild)
     global vote_messages
     vote_messages.clear()
     for member in recent_members:
-        msg = await channel.send(f"📋 Rate Player: **{member.display_name}**")
+        msg = await rating_channel.send(f"📋 Rate Player: **{member.display_name}**")
         for emoji in EMOJIS:
             await msg.add_reaction(emoji)
         vote_messages[str(msg.id)] = member.display_name.lower()
-    await interaction.response.send_message("✅ Ratings posted.", ephemeral=True)
+    save_data()
+    await interaction.response.send_message("✅ Rating posts have been posted.", ephemeral=True)
+
 
 @tree.command(name="postleaderboard", description="Manually post leaderboard")
 async def postleaderboard(interaction: discord.Interaction):
     if not interaction.user.guild_permissions.administrator:
-        await interaction.response.send_message("Admins only", ephemeral=True)
+        await interaction.response.send_message("❌ Admins only.", ephemeral=True)
         return
-    channel = interaction.guild.get_channel(leaderboard_channel_id)
-    await send_leaderboard(channel)
-    await interaction.response.send_message("✅ Leaderboard posted.", ephemeral=True)
+    await post_leaderboard(interaction.channel)
 
-# Post leaderboard
-def calculate_summary(guild):
-    summary = []
-    recent_members = get_recent_voice_users(guild)
-    for member in recent_members:
-        name = member.display_name.lower()
-        if name in votes and votes[name]:
-            avg = sum(votes[name].values()) / len(votes[name])
-            summary.append((member.display_name, round(avg, 2)))
-    return sorted(summary, key=lambda x: x[1], reverse=True)
 
-async def send_leaderboard(channel):
-    summary = calculate_summary(channel.guild)
-    if not summary:
+async def post_leaderboard(channel):
+    print("📊 Posting leaderboard...")
+    if not votes:
         msg = await channel.send("No ratings yet.")
-        await discord.utils.sleep_until(datetime.utcnow() + timedelta(seconds=30))
+        await asyncio.sleep(10)
         await msg.delete()
         return
-    embed = discord.Embed(title="🏆 Leaderboard (Last 24h VC Players)", color=discord.Color.gold())
-    for i, (name, avg) in enumerate(summary[:20], 1):
-        embed.add_field(name=f"{i}. {name}", value=f"⭐ {avg}", inline=False)
+    summary = []
+    guild = channel.guild
+    recent_members = get_recent_and_current_voice_users(guild)
+    for member in recent_members:
+        name = member.display_name.lower()
+        if name in votes:
+            ratings = votes[name].values()
+            if ratings:
+                avg = sum(ratings) / len(ratings)
+                summary.append((member.display_name, round(avg, 2)))
+    summary.sort(key=lambda x: x[1], reverse=True)
+    embed = discord.Embed(title="🏆 Player Ratings Leaderboard (Last 24 Hours)", color=discord.Color.gold())
+    for idx, (name, avg) in enumerate(summary, start=1):
+        embed.add_field(name=f"{idx}. {name}", value=f"⭐ {avg}", inline=False)
     await channel.send(embed=embed)
 
-@client.event
+
+@tasks.loop(minutes=30)
+async def auto_post_and_leaderboard():
+    print("⏰ Running auto_post_and_leaderboard...")
+    if not rating_channel_id or not leaderboard_channel_id:
+        return
+    now = datetime.utcnow()
+    uk_hour = (now + timedelta(hours=1)).hour  # UK time (BST)
+    if 1 <= uk_hour < 10:
+        print("⏳ Skipping due to quiet hours (1am-10am UK time)")
+        return
+    guild = bot.guilds[0]
+    rating_channel = guild.get_channel(rating_channel_id)
+    leaderboard_channel = guild.get_channel(leaderboard_channel_id)
+    vote_messages.clear()
+    recent_members = get_recent_and_current_voice_users(guild)
+    for member in recent_members:
+        msg = await rating_channel.send(f"📋 Rate Player: **{member.display_name}**")
+        for emoji in EMOJIS:
+            await msg.add_reaction(emoji)
+        vote_messages[str(msg.id)] = member.display_name.lower()
+    save_data()
+    await post_leaderboard(leaderboard_channel)
+
+
+@tree.command(name="sync", description="Force slash command sync")
+async def sync(interaction: discord.Interaction):
+    if interaction.user.guild_permissions.administrator:
+        await tree.sync()
+        await interaction.response.send_message("✅ Slash commands synced!", ephemeral=True)
+    else:
+        await interaction.response.send_message("❌ Admins only", ephemeral=True)
+
+
+@bot.event
 async def on_ready():
     load_data()
     await tree.sync()
-    print("Bot is ready.")
+    print("✅ Bot is ready and commands are synced.")
+    auto_post_and_leaderboard.start()
 
-client.run(os.getenv("BOT_TOKEN"))
+
+bot.run(os.getenv("BOT_TOKEN"))
