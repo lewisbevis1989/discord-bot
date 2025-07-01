@@ -1,120 +1,154 @@
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 from discord import app_commands
+import asyncio
 import json
 import os
+from datetime import datetime, timedelta, timezone
+from dotenv import load_dotenv
+
+load_dotenv()
+TOKEN = os.getenv("DISCORD_TOKEN")
+GUILD_ID = int(os.getenv("GUILD_ID")) if os.getenv("GUILD_ID") else None
 
 intents = discord.Intents.default()
+intents.message_content = True
 intents.members = True
+intents.voice_states = True
+intents.guilds = True
+
 bot = commands.Bot(command_prefix="!", intents=intents)
+tree = bot.tree
 
-DATA_FILE = "ratings_data.json"
-CHANNEL_CONFIG_FILE = "channel_config.json"
+ratings_file = "ratings.json"
+log_file = "voice_log.json"
+config_file = "config.json"
+notified_file = "notified.json"
 
-# Load existing rating data
-if os.path.exists(DATA_FILE):
-    with open(DATA_FILE, "r") as f:
-        ratings_data = json.load(f)
-else:
-    ratings_data = {}
+# Load or create necessary files
+def load_json(filename):
+    if not os.path.exists(filename):
+        with open(filename, "w") as f:
+            json.dump({}, f)
+    with open(filename, "r") as f:
+        return json.load(f)
 
-# Load channel configuration
-if os.path.exists(CHANNEL_CONFIG_FILE):
-    with open(CHANNEL_CONFIG_FILE, "r") as f:
-        channel_config = json.load(f)
-else:
-    channel_config = {
-        "rating_channel": None,
-        "leaderboard_channel": None
-    }
+def save_json(filename, data):
+    with open(filename, "w") as f:
+        json.dump(data, f, indent=4)
 
-# Save functions
-def save_ratings():
-    with open(DATA_FILE, "w") as f:
-        json.dump(ratings_data, f)
+ratings = load_json(ratings_file)
+voice_log = load_json(log_file)
+config = load_json(config_file)
+notified = load_json(notified_file)
 
-def save_channel_config():
-    with open(CHANNEL_CONFIG_FILE, "w") as f:
-        json.dump(channel_config, f)
-
-# --- Slash Commands ---
-@bot.tree.command(name="setratingchannel", description="Set the channel for player ratings")
-@app_commands.checks.has_permissions(administrator=True)
-async def set_rating_channel(interaction: discord.Interaction):
-    channel_config["rating_channel"] = interaction.channel.id
-    save_channel_config()
-    await interaction.response.send_message("✅ Rating channel has been set.", ephemeral=True)
-
-@bot.tree.command(name="setleaderboardchannel", description="Set the channel for leaderboard posts")
-@app_commands.checks.has_permissions(administrator=True)
-async def set_leaderboard_channel(interaction: discord.Interaction):
-    channel_config["leaderboard_channel"] = interaction.channel.id
-    save_channel_config()
-    await interaction.response.send_message("✅ Leaderboard channel has been set.", ephemeral=True)
-
-@bot.tree.command(name="postratings", description="Post rating buttons in the rating channel")
-async def post_ratings(interaction: discord.Interaction):
-    channel_id = channel_config.get("rating_channel")
-    if not channel_id:
-        await interaction.response.send_message("⚠️ Rating channel not set.", ephemeral=True)
-        return
-
-    channel = bot.get_channel(channel_id)
-    if not channel:
-        await interaction.response.send_message("⚠️ Could not find the rating channel.", ephemeral=True)
-        return
-
-    # Replace with player names and Discord user IDs
-    players = [
-        {"name": "Player A", "id": 111111111111111111},
-        {"name": "Player B", "id": 222222222222222222},
-        {"name": "Player C", "id": 333333333333333333}
-    ]
-
-    for player in players:
-        view = RatingView(player_id=str(player["id"]), player_name=player["name"])
-        await channel.send(f"Rate **{player['name']}**:", view=view)
-
-    await interaction.response.send_message("✅ Rating posts have been posted.", ephemeral=True)
-
-# --- Rating View ---
-class RatingView(discord.ui.View):
-    def __init__(self, player_id, player_name):
-        super().__init__(timeout=None)
-        self.player_id = player_id
-        self.player_name = player_name
-        for i in range(1, 6):
-            self.add_item(RatingButton(i, self.player_id))
-
-class RatingButton(discord.ui.Button):
-    def __init__(self, rating, player_id):
-        super().__init__(label=str(rating), style=discord.ButtonStyle.primary)
-        self.rating = rating
-        self.player_id = player_id
-
-    async def callback(self, interaction: discord.Interaction):
-        user_id = str(interaction.user.id)
-
-        if self.player_id not in ratings_data:
-            ratings_data[self.player_id] = []
-
-        # Save anonymous rating
-        ratings_data[self.player_id].append(self.rating)
-        save_ratings()
-
-        await interaction.response.send_message("✅ Your rating has been submitted anonymously.", ephemeral=True)
-
-# --- Bot Events ---
 @bot.event
 async def on_ready():
-    print(f"Logged in as {bot.user}")
+    print(f'Bot connected as {bot.user}')
     try:
-        synced = await bot.tree.sync()
-        print(f"Synced {len(synced)} command(s)")
+        synced = await tree.sync(guild=discord.Object(id=GUILD_ID)) if GUILD_ID else await tree.sync()
+        print(f'Synced {len(synced)} commands')
     except Exception as e:
-        print(f"Failed to sync commands: {e}")
+        print(f"Sync error: {e}")
+    auto_post.start()
 
-# Run bot
-import dotenv
-dotenv.load_dotenv()
-bot.run(os.getenv("BOT_TOKEN"))
+def is_recent(member_id):
+    now = datetime.now(timezone.utc)
+    joined = voice_log.get(str(member_id))
+    if joined:
+        joined_time = datetime.fromisoformat(joined)
+        return now - joined_time <= timedelta(hours=24)
+    return False
+
+@bot.event
+async def on_voice_state_update(member, before, after):
+    if after.channel and not before.channel:
+        voice_log[str(member.id)] = datetime.now(timezone.utc).isoformat()
+        save_json(log_file, voice_log)
+
+@tree.command(name="setratingschannel", description="Set the channel for posting ratings")
+@app_commands.checks.has_permissions(administrator=True)
+async def set_ratings_channel(interaction: discord.Interaction):
+    config["ratings_channel"] = interaction.channel.id
+    save_json(config_file, config)
+    await interaction.response.send_message("✅ Ratings channel has been set to this channel.", ephemeral=True)
+
+@tree.command(name="setleaderboardchannel", description="Set the channel for posting leaderboard")
+@app_commands.checks.has_permissions(administrator=True)
+async def set_leaderboard_channel(interaction: discord.Interaction):
+    config["leaderboard_channel"] = interaction.channel.id
+    save_json(config_file, config)
+    await interaction.response.send_message("✅ Leaderboard channel has been set to this channel.", ephemeral=True)
+
+@tree.command(name="postratings", description="Manually post ratings")
+async def post_ratings(interaction: discord.Interaction):
+    if not config.get("ratings_channel"):
+        await interaction.response.send_message("❌ Ratings channel not set.", ephemeral=True)
+        return
+
+    channel = bot.get_channel(config["ratings_channel"])
+    for user_id in list(voice_log):
+        if is_recent(user_id):
+            user = interaction.guild.get_member(int(user_id))
+            if user:
+                msg = await channel.send(f"Rate {user.mention}: 1️⃣ 2️⃣ 3️⃣ 4️⃣ 5️⃣")
+                for emoji in ("1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣"):
+                    await msg.add_reaction(emoji)
+    await interaction.response.send_message("✅ Rating posts have been posted.", ephemeral=True)
+
+@tree.command(name="postleaderboard", description="Manually post leaderboard")
+async def post_leaderboard(interaction: discord.Interaction):
+    await generate_leaderboard()
+    await interaction.response.send_message("✅ Leaderboard posted.", ephemeral=True)
+
+@bot.event
+async def on_reaction_add(reaction, user):
+    if user.bot or reaction.message.author != bot.user:
+        return
+    if reaction.emoji in ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣"]:
+        score = int(reaction.emoji[0])
+        mentioned = reaction.message.mentions[0] if reaction.message.mentions else None
+        if mentioned:
+            uid = str(mentioned.id)
+            ratings.setdefault(uid, []).append(score)
+            save_json(ratings_file, ratings)
+            await reaction.message.remove_reaction(reaction.emoji, user)
+
+async def generate_leaderboard():
+    if not config.get("leaderboard_channel"):
+        return
+
+    channel = bot.get_channel(config["leaderboard_channel"])
+    now = datetime.now(timezone.utc)
+    leaderboard = []
+
+    for user_id, scores in ratings.items():
+        if not is_recent(user_id):
+            continue
+        avg_score = sum(scores) / len(scores)
+        leaderboard.append((user_id, avg_score))
+
+    leaderboard.sort(key=lambda x: x[1], reverse=True)
+
+    if not leaderboard:
+        await channel.send("No ratings yet.")
+        return
+
+    lines = []
+    for user_id, avg in leaderboard:
+        member = channel.guild.get_member(int(user_id))
+        if member:
+            lines.append(f"{member.display_name}: {avg:.2f}")
+
+    embed = discord.Embed(title="🏆 Leaderboard (last 24h)", description="\n".join(lines), color=0x00ff00)
+    await channel.send(embed=embed)
+
+@tasks.loop(minutes=30)
+async def auto_post():
+    hour = datetime.now(timezone.utc).hour
+    if hour < 1 or hour >= 10:
+        ctx = type('obj', (object,), {'guild': bot.get_guild(GUILD_ID)})
+        await post_ratings(ctx)
+        await generate_leaderboard()
+
+bot.run(TOKEN)
