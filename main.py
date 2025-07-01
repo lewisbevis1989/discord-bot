@@ -18,17 +18,16 @@ VOTES_FILE = "votes.json"
 VOICE_LOG = "voice_log.json"
 CHANNEL_FILE = "rating_channel.json"
 LEADERBOARD_CHANNEL_FILE = "leaderboard_channel.json"
-LEADERBOARD_MESSAGE_FILE = "leaderboard_message.json"
 vote_messages = {}
 votes = {}
 voice_log = {}
 rating_channel_id = None
 leaderboard_channel_id = None
-leaderboard_message_id = None
+last_leaderboard_message = None
 EMOJIS = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣"]
 
 def load_data():
-    global votes, voice_log, rating_channel_id, leaderboard_channel_id, leaderboard_message_id
+    global votes, voice_log, rating_channel_id, leaderboard_channel_id
     if os.path.exists(VOTES_FILE):
         with open(VOTES_FILE, "r") as f:
             votes = json.load(f)
@@ -41,9 +40,6 @@ def load_data():
     if os.path.exists(LEADERBOARD_CHANNEL_FILE):
         with open(LEADERBOARD_CHANNEL_FILE, "r") as f:
             leaderboard_channel_id = json.load(f).get("channel_id")
-    if os.path.exists(LEADERBOARD_MESSAGE_FILE):
-        with open(LEADERBOARD_MESSAGE_FILE, "r") as f:
-            leaderboard_message_id = json.load(f).get("message_id")
 
 def save_data():
     with open(VOTES_FILE, "w") as f:
@@ -54,10 +50,6 @@ def save_data():
 def save_channel(channel_id, filename):
     with open(filename, "w") as f:
         json.dump({"channel_id": channel_id}, f)
-
-def save_leaderboard_message_id(message_id):
-    with open(LEADERBOARD_MESSAGE_FILE, "w") as f:
-        json.dump({"message_id": message_id}, f)
 
 @client.event
 async def on_voice_state_update(member, before, after):
@@ -99,18 +91,7 @@ async def on_raw_reaction_add(payload):
         member = guild.get_member(payload.user_id)
         await message.remove_reaction(payload.emoji, member)
 
-@client.event
-async def on_raw_reaction_remove(payload):
-    message_id = str(payload.message_id)
-    emoji = payload.emoji.name
-    if message_id in vote_messages and emoji in EMOJIS:
-        player = vote_messages[message_id]
-        user_id = str(payload.user_id)
-        if player in votes and user_id in votes[player]:
-            del votes[player][user_id]
-            save_data()
-
-@tree.command(name="setratingchannel", description="Set the channel for auto-rating posts")
+@tree.command(name="setratingchannel", description="Set the channel for auto-rating posts (admin only)")
 async def setratingchannel(interaction: discord.Interaction):
     if not interaction.user.guild_permissions.administrator:
         await interaction.response.send_message("❌ Admins only", ephemeral=True)
@@ -118,9 +99,9 @@ async def setratingchannel(interaction: discord.Interaction):
     save_channel(interaction.channel_id, CHANNEL_FILE)
     global rating_channel_id
     rating_channel_id = interaction.channel_id
-    await interaction.response.send_message("✅ Rating channel set.")
+    await interaction.response.send_message("✅ This channel is now set for rating posts.")
 
-@tree.command(name="setleaderboardchannel", description="Set the channel for leaderboard posts")
+@tree.command(name="setleaderboardchannel", description="Set the channel for leaderboard posts (admin only)")
 async def setleaderboardchannel(interaction: discord.Interaction):
     if not interaction.user.guild_permissions.administrator:
         await interaction.response.send_message("❌ Admins only", ephemeral=True)
@@ -128,19 +109,13 @@ async def setleaderboardchannel(interaction: discord.Interaction):
     save_channel(interaction.channel_id, LEADERBOARD_CHANNEL_FILE)
     global leaderboard_channel_id
     leaderboard_channel_id = interaction.channel_id
-    await interaction.response.send_message("✅ Leaderboard channel set.")
+    await interaction.response.send_message("✅ This channel is now set for leaderboard posts.")
 
 async def post_leaderboard(channel):
-    global leaderboard_message_id
-
-    if not votes:
-        await channel.send("No ratings yet.")
-        return
-
-    summary = []
+    global last_leaderboard_message
     guild = channel.guild
     recent_members = get_recent_and_current_voice_users(guild)
-
+    summary = []
     for member in recent_members:
         player_name = member.display_name.lower()
         if player_name in votes:
@@ -149,52 +124,46 @@ async def post_leaderboard(channel):
                 avg = sum(ratings.values()) / len(ratings)
                 summary.append((player_name.title(), round(avg, 2)))
 
-    summary.sort(key=lambda x: x[1], reverse=True)
-    embed = discord.Embed(title="⚽ Player Ratings Leaderboard (Last 24 Hours - VC Join)", color=discord.Color.blue())
+    # Delete old leaderboard message
+    async for msg in channel.history(limit=50):
+        if msg.author == client.user and msg.embeds:
+            if msg.embeds[0].title and "Player Ratings Leaderboard" in msg.embeds[0].title:
+                await msg.delete()
 
+    if not summary:
+        msg = await channel.send("No ratings yet.")
+        return
+
+    summary.sort(key=lambda x: x[1], reverse=True)
+    embed = discord.Embed(title="🏀 Player Ratings Leaderboard (Last 24 Hours - VC Join)", color=discord.Color.blue())
     for idx, (name, avg) in enumerate(summary, start=1):
         embed.add_field(name=f"{idx}. {name}", value=f"⭐ {avg}", inline=False)
-
-    if leaderboard_message_id:
-        try:
-            old_msg = await channel.fetch_message(leaderboard_message_id)
-            await old_msg.delete()
-        except:
-            pass
-
-    new_msg = await channel.send(embed=embed)
-    leaderboard_message_id = new_msg.id
-    save_leaderboard_message_id(leaderboard_message_id)
+    last_leaderboard_message = await channel.send(embed=embed)
 
 @tasks.loop(minutes=30)
 async def auto_post_and_leaderboard():
+    now = datetime.utcnow()
+    uk_hour = (now + timedelta(hours=1)).hour
+    if 1 <= uk_hour < 10:
+        return
     if not rating_channel_id or not leaderboard_channel_id:
         return
-
-    now = datetime.utcnow()
-    if 1 <= (now + timedelta(hours=1)).hour < 10:
-        return  # UK quiet hours
-
     guild = client.guilds[0]
     rating_channel = guild.get_channel(rating_channel_id)
     leaderboard_channel = guild.get_channel(leaderboard_channel_id)
-
     recent_members = get_recent_and_current_voice_users(guild)
     global vote_messages
-
-    # Delete old messages
-    async for msg in rating_channel.history(limit=100):
-        if msg.author == client.user and msg.id in [int(mid) for mid in vote_messages.keys()]:
-            await msg.delete()
-
+    # Clear old vote messages
     vote_messages.clear()
+    async for msg in rating_channel.history(limit=50):
+        if msg.author == client.user and msg.content.startswith("📋 Rate Player"):
+            await msg.delete()
     for member in recent_members:
         player_name = member.display_name.lower()
         msg = await rating_channel.send(f"📋 Rate Player: **{member.display_name}**")
         for emoji in EMOJIS:
             await msg.add_reaction(emoji)
         vote_messages[str(msg.id)] = player_name
-
     save_data()
     await post_leaderboard(leaderboard_channel)
 
@@ -218,4 +187,3 @@ async def on_ready():
     print(f"✅ Logged in as {client.user}")
 
 client.run(os.getenv("BOT_TOKEN"))
-
