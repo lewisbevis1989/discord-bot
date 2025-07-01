@@ -45,11 +45,6 @@ notified = load_json(notified_file)
 @bot.event
 async def on_ready():
     print(f'Bot connected as {bot.user}')
-    try:
-        synced = await tree.sync(guild=discord.Object(id=GUILD_ID)) if GUILD_ID else await tree.sync()
-        print(f'Synced {len(synced)} commands')
-    except Exception as e:
-        print(f"Sync error: {e}")
     auto_post.start()
 
 def is_recent(member_id):
@@ -59,6 +54,14 @@ def is_recent(member_id):
         joined_time = datetime.fromisoformat(joined)
         return now - joined_time <= timedelta(hours=24)
     return False
+
+@bot.event
+async def setup_hook():
+    if GUILD_ID:
+        guild = discord.Object(id=GUILD_ID)
+        await tree.sync(guild=guild)
+    else:
+        await tree.sync()
 
 @bot.event
 async def on_voice_state_update(member, before, after):
@@ -82,18 +85,7 @@ async def set_leaderboard_channel(interaction: discord.Interaction):
 
 @tree.command(name="postratings", description="Manually post ratings")
 async def post_ratings(interaction: discord.Interaction):
-    if not config.get("ratings_channel"):
-        await interaction.response.send_message("❌ Ratings channel not set.", ephemeral=True)
-        return
-
-    channel = bot.get_channel(config["ratings_channel"])
-    for user_id in list(voice_log):
-        if is_recent(user_id):
-            user = interaction.guild.get_member(int(user_id))
-            if user:
-                msg = await channel.send(f"Rate {user.mention}: 1️⃣ 2️⃣ 3️⃣ 4️⃣ 5️⃣")
-                for emoji in ("1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣"):
-                    await msg.add_reaction(emoji)
+    await send_ratings()
     await interaction.response.send_message("✅ Rating posts have been posted.", ephemeral=True)
 
 @tree.command(name="postleaderboard", description="Manually post leaderboard")
@@ -113,6 +105,20 @@ async def on_reaction_add(reaction, user):
             ratings.setdefault(uid, []).append(score)
             save_json(ratings_file, ratings)
             await reaction.message.remove_reaction(reaction.emoji, user)
+
+async def send_ratings():
+    if not config.get("ratings_channel"):
+        return
+
+    channel = bot.get_channel(config["ratings_channel"])
+    for user_id in list(voice_log):
+        if is_recent(user_id):
+            guild = channel.guild
+            user = guild.get_member(int(user_id))
+            if user:
+                msg = await channel.send(f"Rate {user.mention}: 1️⃣ 2️⃣ 3️⃣ 4️⃣ 5️⃣")
+                for emoji in ("1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣"):
+                    await msg.add_reaction(emoji)
 
 async def generate_leaderboard():
     if not config.get("leaderboard_channel"):
@@ -147,8 +153,7 @@ async def generate_leaderboard():
 async def auto_post():
     hour = datetime.now(timezone.utc).hour
     if hour < 1 or hour >= 10:
-        ctx = type('obj', (object,), {'guild': bot.get_guild(GUILD_ID)})
-        await post_ratings(ctx)
+        await send_ratings()
         await generate_leaderboard()
 
 bot.run(TOKEN)
