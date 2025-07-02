@@ -83,13 +83,29 @@ async def set_leaderboard_channel(interaction: discord.Interaction):
     save_json(config_file, config)
     await interaction.response.send_message("✅ Leaderboard channel set.", ephemeral=True)
 
+@tree.command(name="setratingschannel", description="Set the ratings channel", guild=discord.Object(id=GUILD_ID))
+@app_commands.checks.has_permissions(administrator=True)
+async def set_ratings_channel(interaction: discord.Interaction):
+    config["ratings_channel"] = interaction.channel.id
+    save_json(config_file, config)
+    await interaction.response.send_message("✅ Ratings channel set.", ephemeral=True)
+
+@tree.command(name="setwarningschannel", description="Set the warnings channel", guild=discord.Object(id=GUILD_ID))
+@app_commands.checks.has_permissions(administrator=True)
+async def set_warnings_channel(interaction: discord.Interaction):
+    config["warnings_channel"] = interaction.channel.id
+    save_json(config_file, config)
+    await interaction.response.send_message("✅ Warnings channel set.", ephemeral=True)
+
 @tasks.loop(minutes=30)
 async def auto_post():
     now = datetime.now(timezone.utc)
-    if now.hour < 0 or now.hour >= 10:
+    if 0 <= now.hour < 10:
         return
-    # Add your postrating and leaderboard logic
-    pass
+    guild = bot.get_guild(GUILD_ID)
+    if not guild:
+        return
+    # Placeholder for postrating and leaderboard logic
+    print("[AUTO POST] Triggered - add actual postrating and leaderboard logic.")
 
 bot.run(TOKEN)
-
