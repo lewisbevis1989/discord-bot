@@ -119,6 +119,27 @@ async def sync_commands(interaction: discord.Interaction):
     await tree.sync(guild=discord.Object(id=GUILD_ID))
     await interaction.response.send_message("✅ Commands synced.", ephemeral=True)
 
+@tree.command(name="viewvotes")
+@app_commands.checks.has_permissions(administrator=True)
+@app_commands.describe(member="The member to view received votes for")
+async def view_votes(interaction: discord.Interaction, member: discord.Member):
+    user_id = str(member.id)
+    votes = ratings.get(user_id)
+    if not votes:
+        await interaction.response.send_message(f"No votes recorded for {member.display_name}.", ephemeral=True)
+        return
+
+    voter_lines = []
+    for voter_id, score in votes.items():
+        voter = interaction.guild.get_member(int(voter_id))
+        voter_name = voter.display_name if voter else f"User {voter_id}"
+        voter_lines.append(f"{voter_name}: {score}")
+
+    await interaction.response.send_message(
+        f"**Votes for {member.display_name}:**\n" + "\n".join(voter_lines),
+        ephemeral=True
+    )
+
 @bot.event
 async def on_interaction(interaction: discord.Interaction):
     if interaction.type.name == 'component':
