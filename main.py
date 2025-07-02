@@ -65,21 +65,21 @@ async def on_voice_state_update(member, before, after):
         voice_log[str(member.id)] = datetime.now(timezone.utc).isoformat()
         save_json(log_file, voice_log)
 
-@tree.command(name="setratingschannel")
+@tree.command(name="setratingschannel", guild=discord.Object(id=GUILD_ID))
 @app_commands.checks.has_permissions(administrator=True)
 async def set_ratings_channel(interaction: discord.Interaction):
     config["ratings_channel"] = interaction.channel.id
     save_json(config_file, config)
     await interaction.response.send_message("✅ Ratings channel set.", ephemeral=True)
 
-@tree.command(name="setwarningschannel")
+@tree.command(name="setwarningschannel", guild=discord.Object(id=GUILD_ID))
 @app_commands.checks.has_permissions(administrator=True)
 async def set_warnings_channel(interaction: discord.Interaction):
     config["warnings_channel"] = interaction.channel.id
     save_json(config_file, config)
     await interaction.response.send_message("✅ Warnings log channel set.", ephemeral=True)
 
-@tree.command(name="setleaderboardchannel")
+@tree.command(name="setleaderboardchannel", guild=discord.Object(id=GUILD_ID))
 @app_commands.checks.has_permissions(administrator=True)
 async def set_leaderboard_channel(interaction: discord.Interaction):
     config["leaderboard_channel"] = interaction.channel.id
@@ -103,17 +103,17 @@ async def do_postratings(guild):
                 view.add_item(discord.ui.Button(label=str(i), style=discord.ButtonStyle.primary, custom_id=f"rate:{user_id}:{i}"))
             await channel.send(f"Rate {member.mention}", view=view)
 
-@tree.command(name="postratings")
+@tree.command(name="postratings", guild=discord.Object(id=GUILD_ID))
 async def postratings(interaction: discord.Interaction):
     await do_postratings(interaction.guild)
     await interaction.response.send_message("✅ Rating prompts posted.", ephemeral=True)
 
-@tree.command(name="postleaderboard")
+@tree.command(name="postleaderboard", guild=discord.Object(id=GUILD_ID))
 async def postleaderboard(interaction: discord.Interaction):
     await generate_leaderboard()
     await interaction.response.send_message("✅ Leaderboard posted.", ephemeral=True)
 
-@tree.command(name="sync")
+@tree.command(name="sync", guild=discord.Object(id=GUILD_ID))
 @app_commands.checks.has_permissions(administrator=True)
 async def sync_commands(interaction: discord.Interaction):
     await interaction.response.defer(thinking=True, ephemeral=True)
