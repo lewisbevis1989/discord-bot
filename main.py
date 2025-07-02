@@ -95,7 +95,7 @@ async def set_leaderboard_channel(interaction: discord.Interaction):
 
 
 @tree.command(name="postratings")
-async def post_ratings(interaction: discord.Interaction):
+async def postratings(interaction: discord.Interaction):
     if not config.get("ratings_channel"):
         await interaction.response.send_message("❌ Ratings channel not set.", ephemeral=True)
         return
@@ -120,7 +120,7 @@ async def post_ratings(interaction: discord.Interaction):
 
 
 @tree.command(name="postleaderboard")
-async def post_leaderboard(interaction: discord.Interaction):
+async def postleaderboard(interaction: discord.Interaction):
     await generate_leaderboard()
     await interaction.response.send_message("✅ Leaderboard posted.", ephemeral=True)
 
@@ -131,11 +131,6 @@ async def sync_commands(interaction: discord.Interaction):
     await tree.sync(guild=discord.Object(id=GUILD_ID))
     await interaction.response.send_message("✅ Commands synced.", ephemeral=True)
 
-
-class RateButtonHandler(discord.ui.View):
-    @discord.ui.button(label="1", style=discord.ButtonStyle.primary, custom_id="rate_button_1")
-    async def button_callback(self, interaction: discord.Interaction, button: discord.ui.Button):
-        pass  # Handled via on_interaction
 
 @bot.event
 async def on_interaction(interaction: discord.Interaction):
@@ -151,7 +146,6 @@ async def on_interaction(interaction: discord.Interaction):
 
             await interaction.response.send_message("✅ Your vote has been saved anonymously.", ephemeral=True)
 
-            # DM warning or encouragement
             rated_scores = ratings.get(user_id, {}).values()
             avg = sum(rated_scores) / len(rated_scores)
 
@@ -220,7 +214,7 @@ async def auto_post():
     if now.hour < 0 or now.hour >= 10:
         return  # Sleep hours: midnight to 10am UTC
     ctx = type('obj', (object,), {'guild': bot.get_guild(GUILD_ID)})
-    await post_ratings(ctx)
+    await postratings(ctx)
     await generate_leaderboard()
 
 bot.run(TOKEN)
