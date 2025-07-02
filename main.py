@@ -6,6 +6,7 @@ import json
 import os
 from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
+from pytz import timezone as pytz_timezone
 
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
@@ -25,7 +26,6 @@ log_file = "voice_log.json"
 config_file = "config.json"
 notified_file = "notified.json"
 
-
 def load_json(filename):
     if not os.path.exists(filename):
         with open(filename, "w") as f:
@@ -42,7 +42,6 @@ voice_log = load_json(log_file)
 config = load_json(config_file)
 notified = load_json(notified_file)
 
-
 def is_recent(member_id):
     now = datetime.now(timezone.utc)
     joined = voice_log.get(str(member_id))
@@ -50,7 +49,6 @@ def is_recent(member_id):
         joined_time = datetime.fromisoformat(joined)
         return now - joined_time <= timedelta(hours=24)
     return False
-
 
 @bot.event
 async def on_ready():
@@ -62,13 +60,11 @@ async def on_ready():
         print(f"Sync error: {e}")
     auto_post.start()
 
-
 @bot.event
 async def on_voice_state_update(member, before, after):
     if after.channel and not before.channel:
         voice_log[str(member.id)] = datetime.now(timezone.utc).isoformat()
         save_json(log_file, voice_log)
-
 
 @tree.command(name="setratingschannel")
 @app_commands.checks.has_permissions(administrator=True)
@@ -77,14 +73,12 @@ async def set_ratings_channel(interaction: discord.Interaction):
     save_json(config_file, config)
     await interaction.response.send_message("✅ Ratings channel set.", ephemeral=True)
 
-
 @tree.command(name="setwarningschannel")
 @app_commands.checks.has_permissions(administrator=True)
 async def set_warnings_channel(interaction: discord.Interaction):
     config["warnings_channel"] = interaction.channel.id
     save_json(config_file, config)
     await interaction.response.send_message("✅ Warnings log channel set.", ephemeral=True)
-
 
 @tree.command(name="setleaderboardchannel")
 @app_commands.checks.has_permissions(administrator=True)
@@ -93,7 +87,6 @@ async def set_leaderboard_channel(interaction: discord.Interaction):
     save_json(config_file, config)
     await interaction.response.send_message("✅ Leaderboard channel set.", ephemeral=True)
 
-
 @tree.command(name="postratings")
 async def post_ratings(interaction: discord.Interaction):
     if not config.get("ratings_channel"):
@@ -101,12 +94,17 @@ async def post_ratings(interaction: discord.Interaction):
         return
 
     channel = bot.get_channel(config["ratings_channel"])
+
+    # delete old rating buttons
+    async for msg in channel.history(limit=50):
+        if msg.author == bot.user and msg.components:
+            await msg.delete()
+
     sorted_users = sorted(voice_log.items(), key=lambda x: x[1])
     now = datetime.now(timezone.utc)
 
     for user_id, timestamp in sorted_users:
-        time_diff = now - datetime.fromisoformat(timestamp)
-        if time_diff > timedelta(hours=24):
+        if now - datetime.fromisoformat(timestamp) > timedelta(hours=24):
             continue
 
         member = interaction.guild.get_member(int(user_id))
@@ -118,24 +116,30 @@ async def post_ratings(interaction: discord.Interaction):
 
     await interaction.response.send_message("✅ Rating prompts posted.", ephemeral=True)
 
-
 @tree.command(name="postleaderboard")
 async def post_leaderboard(interaction: discord.Interaction):
     await generate_leaderboard()
     await interaction.response.send_message("✅ Leaderboard posted.", ephemeral=True)
 
+@tree.command(name="viewratings")
+@app_commands.checks.has_permissions(administrator=True)
+@app_commands.describe(player="Player to view ratings for")
+async def view_ratings(interaction: discord.Interaction, player: discord.Member):
+    player_id = str(player.id)
+    if player_id not in ratings:
+        await interaction.response.send_message("❌ No ratings for this user.", ephemeral=True)
+        return
+
+    user_ratings = ratings[player_id]
+    lines = [f"<@{rater_id}>: {score}" for rater_id, score in user_ratings.items()]
+    message = f"📊 **Ratings for {player.mention}:**\n" + "\n".join(lines)
+    await interaction.response.send_message(message, ephemeral=True)
 
 @tree.command(name="sync")
 @app_commands.checks.has_permissions(administrator=True)
 async def sync_commands(interaction: discord.Interaction):
     await tree.sync(guild=discord.Object(id=GUILD_ID))
     await interaction.response.send_message("✅ Commands synced.", ephemeral=True)
-
-
-class RateButtonHandler(discord.ui.View):
-    @discord.ui.button(label="1", style=discord.ButtonStyle.primary, custom_id="rate_button_1")
-    async def button_callback(self, interaction: discord.Interaction, button: discord.ui.Button):
-        pass  # Handled via on_interaction
 
 @bot.event
 async def on_interaction(interaction: discord.Interaction):
@@ -161,7 +165,7 @@ async def on_interaction(interaction: discord.Interaction):
 
                 if avg <= 2.0 and len(rated_scores) >= 2 and not has_warned.get("warned"):
                     try:
-                        await recipient.send("👋 Just a heads-up! Your current average rating is a bit low. Focus on quick, simple passes and good positioning. If you're unsure, hop into voice chat and ask for help—we're all here to improve together!")
+                        await recipient.send("👋 Heads-up! Your rating is a bit low. Keep it simple and smart—ask for help if needed!")
                         if config.get("warnings_channel"):
                             logchan = bot.get_channel(config["warnings_channel"])
                             await logchan.send(f"⚠️ {recipient.name} received a low rating warning (avg: {avg:.2f})")
@@ -169,10 +173,9 @@ async def on_interaction(interaction: discord.Interaction):
                         save_json(notified_file, notified)
                     except:
                         pass
-
                 elif avg > 2.5 and has_warned.get("warned") and not has_warned.get("encouraged"):
                     try:
-                        await recipient.send("✅ Great job! Your rating has gone up. Keep playing smart with quick passes and stay involved. Reach out if you want help pushing even higher!")
+                        await recipient.send("✅ Great job! Your rating is improving. Keep it up!")
                         if config.get("warnings_channel"):
                             logchan = bot.get_channel(config["warnings_channel"])
                             await logchan.send(f"✅ {recipient.name} recovered to avg: {avg:.2f} — encouragement sent.")
@@ -181,16 +184,16 @@ async def on_interaction(interaction: discord.Interaction):
                     except:
                         pass
 
-
 async def generate_leaderboard():
     if not config.get("leaderboard_channel"):
         return
 
     channel = bot.get_channel(config["leaderboard_channel"])
-    old = None
+
+    # delete old leaderboard
     async for msg in channel.history(limit=10):
         if msg.author == bot.user and msg.embeds:
-            old = msg
+            await msg.delete()
             break
 
     leaderboard = []
@@ -209,18 +212,37 @@ async def generate_leaderboard():
         lines = [f"**{name}**: {avg:.2f}" for name, avg in leaderboard]
         embed = discord.Embed(title="🏆 Leaderboard (last 24h)", description="\n".join(lines), color=0x00ff00)
 
-    if old:
-        await old.delete()
     await channel.send(embed=embed)
-
 
 @tasks.loop(minutes=30)
 async def auto_post():
-    now = datetime.now(timezone.utc)
-    if now.hour < 0 or now.hour >= 10:
-        return  # Sleep hours: midnight to 10am UTC
-    ctx = type('obj', (object,), {'guild': bot.get_guild(GUILD_ID)})
-    await post_ratings(ctx)
-    await generate_leaderboard()
+    try:
+        uk_time = datetime.now(pytz_timezone("Europe/London"))
+        if 0 <= uk_time.hour < 12:
+            return  # bot sleeps 00:00–12:00 UK time
+
+        # Post ratings
+        channel = bot.get_channel(config.get("ratings_channel"))
+        if channel:
+            async for msg in channel.history(limit=50):
+                if msg.author == bot.user and msg.components:
+                    await msg.delete()
+
+            sorted_users = sorted(voice_log.items(), key=lambda x: x[1])
+            now = datetime.now(timezone.utc)
+            for user_id, timestamp in sorted_users:
+                if now - datetime.fromisoformat(timestamp) > timedelta(hours=24):
+                    continue
+                member = channel.guild.get_member(int(user_id))
+                if member:
+                    view = discord.ui.View()
+                    for i in range(1, 6):
+                        view.add_item(discord.ui.Button(label=str(i), style=discord.ButtonStyle.primary, custom_id=f"rate:{user_id}:{i}"))
+                    await channel.send(f"Rate {member.mention}", view=view)
+
+        await generate_leaderboard()
+
+    except Exception as e:
+        print(f"[ERROR] auto_post failed: {e}")
 
 bot.run(TOKEN)
