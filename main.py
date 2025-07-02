@@ -1,3 +1,4 @@
+
 import discord
 from discord.ext import commands, tasks
 from discord import app_commands
@@ -54,8 +55,12 @@ def is_recent(member_id):
 async def on_ready():
     print(f'Bot connected as {bot.user}')
     try:
-        synced = await tree.sync(guild=discord.Object(id=GUILD_ID)) if GUILD_ID else await tree.sync()
-        print(f'Synced {len(synced)} commands')
+        if GUILD_ID:
+            await tree.sync(guild=discord.Object(id=GUILD_ID))
+            print(f"✅ Synced commands to guild: {GUILD_ID}")
+        else:
+            await tree.sync()
+            print("✅ Synced global commands.")
     except Exception as e:
         print(f"Sync error: {e}")
     auto_post.start()
@@ -95,7 +100,6 @@ async def post_ratings(interaction: discord.Interaction):
 
     channel = bot.get_channel(config["ratings_channel"])
 
-    # delete old rating buttons
     async for msg in channel.history(limit=50):
         if msg.author == bot.user and msg.components:
             await msg.delete()
@@ -132,7 +136,8 @@ async def view_ratings(interaction: discord.Interaction, player: discord.Member)
 
     user_ratings = ratings[player_id]
     lines = [f"<@{rater_id}>: {score}" for rater_id, score in user_ratings.items()]
-    message = f"📊 **Ratings for {player.mention}:**\n" + "\n".join(lines)
+    message = f"📊 **Ratings for {player.mention}:**
+" + "\n".join(lines)
     await interaction.response.send_message(message, ephemeral=True)
 
 @tree.command(name="sync")
@@ -155,7 +160,6 @@ async def on_interaction(interaction: discord.Interaction):
 
             await interaction.response.send_message("✅ Your vote has been saved anonymously.", ephemeral=True)
 
-            # DM warning or encouragement
             rated_scores = ratings.get(user_id, {}).values()
             avg = sum(rated_scores) / len(rated_scores)
 
@@ -190,7 +194,6 @@ async def generate_leaderboard():
 
     channel = bot.get_channel(config["leaderboard_channel"])
 
-    # delete old leaderboard
     async for msg in channel.history(limit=10):
         if msg.author == bot.user and msg.embeds:
             await msg.delete()
@@ -219,9 +222,8 @@ async def auto_post():
     try:
         uk_time = datetime.now(pytz_timezone("Europe/London"))
         if 0 <= uk_time.hour < 12:
-            return  # bot sleeps 00:00–12:00 UK time
+            return
 
-        # Post ratings
         channel = bot.get_channel(config.get("ratings_channel"))
         if channel:
             async for msg in channel.history(limit=50):
