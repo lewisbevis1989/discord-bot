@@ -136,6 +136,12 @@ async def view_ratings(interaction: discord.Interaction, player: discord.Member)
 
     user_ratings = ratings[player_id]
     lines = [f"<@{rater_id}>: {score}" for rater_id, score in user_ratings.items()]
+    message = f"📊 **Ratings for {player.mention}:**\n" + "\n".join(lines)
+    await interaction.response.send_message(message, ephemeral=True)
+
+
+    user_ratings = ratings[player_id]
+    lines = [f"<@{rater_id}>: {score}" for rater_id, score in user_ratings.items()]
     message = f"📊 **Ratings for {player.mention}:**
 " + "
 ".join(lines)
