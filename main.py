@@ -60,10 +60,18 @@ async def on_ready():
     auto_post.start()
 
 @bot.event
-async def on_voice_state_update(member, before, after):
-    if after.channel and not before.channel:
-        voice_log[str(member.id)] = datetime.now(timezone.utc).isoformat()
-        save_json(log_file, voice_log)
+async def on_ready():
+    print(f'Bot connected as {bot.user}')
+    try:
+        guild = discord.Object(id=GUILD_ID)
+        print("Clearing old commands...")
+        await tree.clear_commands(guild=guild)
+        print("Registering commands...")
+        await tree.sync(guild=guild)
+        print("✅ Commands cleared and synced.")
+    except Exception as e:
+        print(f"Sync error: {e}")
+    auto_post.start()
 
 @tree.command(name="setratingschannel", guild=discord.Object(id=GUILD_ID))
 @app_commands.checks.has_permissions(administrator=True)
