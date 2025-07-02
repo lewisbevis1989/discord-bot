@@ -116,8 +116,12 @@ async def postleaderboard(interaction: discord.Interaction):
 @tree.command(name="sync")
 @app_commands.checks.has_permissions(administrator=True)
 async def sync_commands(interaction: discord.Interaction):
-    await tree.sync(guild=discord.Object(id=GUILD_ID))
-    await interaction.response.send_message("✅ Commands synced.", ephemeral=True)
+    await interaction.response.defer(thinking=True, ephemeral=True)
+    try:
+        synced = await tree.sync(guild=discord.Object(id=GUILD_ID))
+        await interaction.followup.send(f"✅ Synced {len(synced)} command(s).", ephemeral=True)
+    except Exception as e:
+        await interaction.followup.send(f"❌ Sync failed: {e}", ephemeral=True)
 
 @tree.command(name="viewvotes")
 @app_commands.checks.has_permissions(administrator=True)
