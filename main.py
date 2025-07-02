@@ -123,7 +123,7 @@ async def sync_commands(interaction: discord.Interaction):
     except Exception as e:
         await interaction.followup.send(f"❌ Sync failed: {e}", ephemeral=True)
 
-@tree.command(name="viewvotes")
+@tree.command(name="viewvotes", guild=discord.Object(id=GUILD_ID))
 @app_commands.checks.has_permissions(administrator=True)
 @app_commands.describe(member="The member to view received votes for")
 async def view_votes(interaction: discord.Interaction, member: discord.Member):
