@@ -137,7 +137,8 @@ async def view_ratings(interaction: discord.Interaction, player: discord.Member)
     user_ratings = ratings[player_id]
     lines = [f"<@{rater_id}>: {score}" for rater_id, score in user_ratings.items()]
     message = f"📊 **Ratings for {player.mention}:**
-" + "\n".join(lines)
+" + "
+".join(lines)
     await interaction.response.send_message(message, ephemeral=True)
 
 @tree.command(name="sync")
@@ -213,7 +214,8 @@ async def generate_leaderboard():
     else:
         leaderboard.sort(key=lambda x: x[1], reverse=True)
         lines = [f"**{name}**: {avg:.2f}" for name, avg in leaderboard]
-        embed = discord.Embed(title="🏆 Leaderboard (last 24h)", description="\n".join(lines), color=0x00ff00)
+        embed = discord.Embed(title="🏆 Leaderboard (last 24h)", description="
+".join(lines), color=0x00ff00)
 
     await channel.send(embed=embed)
 
