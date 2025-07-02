@@ -223,25 +223,4 @@ async def auto_post():
     await post_ratings(ctx)
     await generate_leaderboard()
 
-@tree.command(name="viewvotes", description="View who voted for a specific member", guild=discord.Object(id=GUILD_ID))
-@app_commands.checks.has_permissions(administrator=True)
-@app_commands.describe(member="The member you want to see votes for")
-async def viewvotes(interaction: discord.Interaction, member: discord.Member):
-    user_id = str(member.id)
-    votes = ratings.get(user_id)
-
-    if not votes:
-        await interaction.response.send_message(f"❌ No votes recorded for **{member.display_name}**.", ephemeral=True)
-        return
-
-    lines = []
-    for voter_id, score in votes.items():
-        voter = interaction.guild.get_member(int(voter_id))
-        voter_name = voter.display_name if voter else f"Unknown User ({voter_id})"
-        lines.append(f"**{voter_name}** → {score}")
-
-    result = "\n".join(lines)
-    await interaction.response.send_message(f"📊 **Votes for {member.display_name}:**\n{result}", ephemeral=True)
-
-
 bot.run(TOKEN)
