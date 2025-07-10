@@ -19,7 +19,6 @@ UK_TZ = pytz_timezone('Europe/London')
 # File paths
 VOICE_SESSIONS_FILE = 'voice_sessions.json'
 RATINGS_FILE = 'ratings.json'
-VOTES_LOG_CHANNEL_FILE = 'votes_log_channel.json'
 CONFIG_FILE = 'config.json'
 
 # Helper to load/save JSON
@@ -27,9 +26,7 @@ def load_json(path, default):
     if os.path.exists(path):
         with open(path, 'r') as f:
             return json.load(f)
-    else:
-        return default
-
+    return default
 
 def save_json(path, data):
     with open(path, 'w') as f:
@@ -44,7 +41,6 @@ config = load_json(CONFIG_FILE, {})
 intents = discord.Intents.default()
 intents.voice_states = True
 intents.members = True
-
 bot = commands.Bot(command_prefix='!', intents=intents)
 
 def guild_obj():
@@ -59,18 +55,17 @@ async def on_ready():
     print(f'Logged in as {bot.user} (ID: {bot.user.id})')
     auto_post.start()
 
-# Utility: check admin
-
+# Check admin
 def is_admin(interaction: discord.Interaction) -> bool:
     return interaction.user.guild_permissions.manage_guild
 
-# Admin commands to configure channels
+# Register admin slash commands
 def register_admin_command(name, description):
     def decorator(func):
         return bot.tree.command(
             name=name,
             description=description,
-            guilds=[guild_obj()]
+            guild=guild_obj()
         )(app_commands.check(is_admin)(func))
     return decorator
 
@@ -79,12 +74,6 @@ async def set_ratings_channel(interaction: discord.Interaction, channel: discord
     config['ratings_channel_id'] = channel.id
     save_json(CONFIG_FILE, config)
     await interaction.response.send_message(f'Ratings channel set to {channel.mention}', ephemeral=True)
-
-@register_admin_command('set_votes_log_channel', 'Set channel to log votes')
-async def set_votes_log_channel(interaction: discord.Interaction, channel: discord.TextChannel):
-    config['votes_log_channel_id'] = channel.id
-    save_json(CONFIG_FILE, config)
-    await interaction.response.send_message(f'Votes log channel set to {channel.mention}', ephemeral=True)
 
 @register_admin_command('set_warnings_channel', 'Set channel for warnings')
 async def set_warnings_channel(interaction: discord.Interaction, channel: discord.TextChannel):
@@ -98,7 +87,7 @@ async def set_leaderboard_channel(interaction: discord.Interaction, channel: dis
     save_json(CONFIG_FILE, config)
     await interaction.response.send_message(f'Leaderboard channel set to {channel.mention}', ephemeral=True)
 
-# Voice session tracking
+# Track voice sessions
 @bot.event
 async def on_voice_state_update(member, before, after):
     now = datetime.now(UK_TZ).isoformat()
@@ -112,7 +101,7 @@ async def on_voice_state_update(member, before, after):
                 break
     save_json(VOICE_SESSIONS_FILE, voice_sessions)
 
-# Helper to collect active players in last 2h
+# Get players active in last 2h
 def get_active_players():
     cutoff = datetime.now(UK_TZ) - timedelta(hours=2)
     active = set()
@@ -125,30 +114,30 @@ def get_active_players():
                 break
     return active
 
-# Voting UI
+# Voting UI and logic
 class VoteView(discord.ui.View):
     def __init__(self, target_id):
         super().__init__(timeout=None)
         self.target_id = target_id
 
-    @discord.ui.button(label='1', style=discord.ButtonStyle.danger, custom_id=lambda view: f'vote_1_{view.target_id}')
-    async def vote1(self, interaction: discord.Interaction, button: discord.ui.Button):
+    @discord.ui.button(label='1', style=discord.ButtonStyle.danger, custom_id=lambda v: f'vote_1_{v.target_id}')
+    async def vote1(self, interaction, button):
         await interaction.response.send_modal(ConfirmModal(self.target_id, 1))
 
-    @discord.ui.button(label='2', style=discord.ButtonStyle.primary, custom_id=lambda view: f'vote_2_{view.target_id}')
-    async def vote2(self, interaction: discord.Interaction, button: discord.ui.Button):
+    @discord.ui.button(label='2', style=discord.ButtonStyle.primary, custom_id=lambda v: f'vote_2_{v.target_id}')
+    async def vote2(self, interaction, button):
         await handle_vote(interaction, self.target_id, 2)
 
-    @discord.ui.button(label='3', style=discord.ButtonStyle.primary, custom_id=lambda view: f'vote_3_{view.target_id}')
-    async def vote3(self, interaction: discord.Interaction, button: discord.ui.Button):
+    @discord.ui.button(label='3', style=discord.ButtonStyle.primary, custom_id=lambda v: f'vote_3_{v.target_id}')
+    async def vote3(self, interaction, button):
         await handle_vote(interaction, self.target_id, 3)
 
-    @discord.ui.button(label='4', style=discord.ButtonStyle.primary, custom_id=lambda view: f'vote_4_{view.target_id}')
-    async def vote4(self, interaction: discord.Interaction, button: discord.ui.Button):
+    @discord.ui.button(label='4', style=discord.ButtonStyle.primary, custom_id=lambda v: f'vote_4_{v.target_id}')
+    async def vote4(self, interaction, button):
         await handle_vote(interaction, self.target_id, 4)
 
-    @discord.ui.button(label='5', style=discord.ButtonStyle.success, custom_id=lambda view: f'vote_5_{view.target_id}')
-    async def vote5(self, interaction: discord.Interaction, button: discord.ui.Button):
+    @discord.ui.button(label='5', style=discord.ButtonStyle.success, custom_id=lambda v: f'vote_5_{v.target_id}')
+    async def vote5(self, interaction, button):
         await handle_vote(interaction, self.target_id, 5)
 
 class ConfirmModal(discord.ui.Modal, title='Confirm Rating'):
@@ -158,8 +147,8 @@ class ConfirmModal(discord.ui.Modal, title='Confirm Rating'):
         self.score = score
         self.add_item(discord.ui.InputText(label='Type CONFIRM to proceed', placeholder='CONFIRM'))
 
-    async def on_submit(self, interaction: discord.Interaction):
-        if interaction.data['components'][0]['components'][0]['value'].upper() == 'CONFIRM':
+    async def on_submit(self, interaction):
+        if self.children[0].value.upper() == 'CONFIRM':
             await handle_vote(interaction, self.target_id, self.score)
         else:
             await interaction.response.send_message('Rating cancelled.', ephemeral=True)
@@ -168,53 +157,45 @@ async def handle_vote(interaction, target_id, score):
     voter = interaction.user.id
     if voter == target_id:
         return await interaction.response.send_message('You cannot vote for yourself.', ephemeral=True)
-    # TODO: check shared sessions before allowing vote
-    user_ratings = ratings.setdefault(str(target_id), [])
-    user_ratings = [r for r in user_ratings if r['voter'] != voter]
-    user_ratings.append({'voter': voter, 'score': score, 'time': datetime.now(UK_TZ).isoformat()})
-    ratings[str(target_id)] = user_ratings
+    # Persist vote (overwrite previous by same voter)
+    lst = [r for r in ratings.get(str(target_id), []) if r['voter'] != voter]
+    lst.append({'voter': voter, 'score': score, 'time': datetime.now(UK_TZ).isoformat()})
+    ratings[str(target_id)] = lst
     save_json(RATINGS_FILE, ratings)
-    if config.get('votes_log_channel_id'):
-        ch = bot.get_channel(config['votes_log_channel_id'])
-        if ch:
-            await ch.send(f'<@{voter}> voted {score} for <@{target_id}>')
-    await interaction.response.send_message(f'Your vote of {score} has been recorded.', ephemeral=True)
+    await interaction.response.send_message(f'Your vote of {score} recorded.', ephemeral=True)
 
-# Scheduled task
+# Scheduled posting every 30m
 @tasks.loop(minutes=30)
 async def auto_post():
     now = datetime.now(UK_TZ)
     if now.hour < 12:
         return
     active = get_active_players()
+    # Clean old ratings
     for uid in list(ratings.keys()):
         if int(uid) not in active:
             ratings.pop(uid)
     save_json(RATINGS_FILE, ratings)
-    if config.get('ratings_channel_id'):
-        ch = bot.get_channel(config['ratings_channel_id'])
-        if ch:
-            await ch.send('Current players: ' + ', '.join(str(uid) for uid in active))
-            for uid in active:
-                view = VoteView(uid)
-                await ch.send(f'Rate <@{uid}>', view=view)
+    ch_id = config.get('ratings_channel_id')
+    if ch_id:
+        channel = bot.get_channel(ch_id)
+        if channel:
+            users = ', '.join(f'<@{u}>' for u in active)
+            await channel.send(f'Current players: {users}')
+            for u in active:
+                await channel.send(f'Rate <@{u}>', view=VoteView(u))
 
-# User commands
-@bot.tree.command(name='myratings', description='Show your last 10 received ratings', guilds=[guild_obj()])
-async def myratings(interaction: discord.Interaction):
-    user_ratings = ratings.get(str(interaction.user.id), [])[-10:]
-    if not user_ratings:
+# User slash commands
+@bot.tree.command(name='myratings', description='Show your last 10 received ratings', guild=guild_obj())
+async def myratings(interaction):
+    lst = ratings.get(str(interaction.user.id), [])[-10:]
+    if not lst:
         return await interaction.response.send_message('No ratings available.', ephemeral=True)
-    scores = [r['score'] for r in user_ratings]
-    await interaction.response.send_message('Your last ratings: ' + ', '.join(str(s) for s in scores), ephemeral=True)
+    await interaction.response.send_message('Your last ratings: ' + ', '.join(str(r['score']) for r in lst), ephemeral=True)
 
-@bot.tree.command(name='showratings', description='Show your last 10 votes', guilds=[guild_obj()])
-async def showratings(interaction: discord.Interaction):
-    sent = []
-    for recs in ratings.values():
-        for r in recs:
-            if r['voter'] == interaction.user.id:
-                sent.append(r['score'])
+@bot.tree.command(name='showratings', description='Show your last 10 votes', guild=guild_obj())
+async def showratings(interaction):
+    sent = [r['score'] for recs in ratings.values() for r in recs if r['voter']==interaction.user.id]
     if not sent:
         return await interaction.response.send_message('No ratings sent.', ephemeral=True)
     await interaction.response.send_message('Your votes: ' + ', '.join(str(s) for s in sent[-10:]), ephemeral=True)
