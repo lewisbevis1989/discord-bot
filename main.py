@@ -23,7 +23,6 @@ VOTES_LOG_CHANNEL_FILE = 'votes_log_channel.json'
 CONFIG_FILE = 'config.json'
 
 # Helper to load/save JSON
-```python
 def load_json(path, default):
     if os.path.exists(path):
         with open(path, 'r') as f:
@@ -35,7 +34,7 @@ def load_json(path, default):
 def save_json(path, data):
     with open(path, 'w') as f:
         json.dump(data, f, indent=2)
-```n
+
 # Load persistent data
 voice_sessions = load_json(VOICE_SESSIONS_FILE, {})
 ratings = load_json(RATINGS_FILE, {})
@@ -56,12 +55,12 @@ def guild_obj():
 async def on_ready():
     await bot.wait_until_ready()
     if GUILD_ID:
-        # Sync only for this guild (instant)
         await bot.tree.sync(guild=guild_obj())
     print(f'Logged in as {bot.user} (ID: {bot.user.id})')
     auto_post.start()
 
 # Utility: check admin
+
 def is_admin(interaction: discord.Interaction) -> bool:
     return interaction.user.guild_permissions.manage_guild
 
@@ -104,10 +103,8 @@ async def set_leaderboard_channel(interaction: discord.Interaction, channel: dis
 async def on_voice_state_update(member, before, after):
     now = datetime.now(UK_TZ).isoformat()
     sessions = voice_sessions.setdefault(str(member.id), [])
-    # Joined
     if not before.channel and after.channel:
         sessions.append({'join': now, 'leave': None, 'channel': after.channel.id})
-    # Left
     elif before.channel and not after.channel:
         for s in reversed(sessions):
             if s['leave'] is None and s['channel'] == before.channel.id:
@@ -171,42 +168,36 @@ async def handle_vote(interaction, target_id, score):
     voter = interaction.user.id
     if voter == target_id:
         return await interaction.response.send_message('You cannot vote for yourself.', ephemeral=True)
-    # check shared sessions
-    shared = False
-    # ... existing checks ...
-    # record vote
+    # TODO: check shared sessions before allowing vote
     user_ratings = ratings.setdefault(str(target_id), [])
     user_ratings = [r for r in user_ratings if r['voter'] != voter]
     user_ratings.append({'voter': voter, 'score': score, 'time': datetime.now(UK_TZ).isoformat()})
     ratings[str(target_id)] = user_ratings
     save_json(RATINGS_FILE, ratings)
-    # log vote
     if config.get('votes_log_channel_id'):
         ch = bot.get_channel(config['votes_log_channel_id'])
         if ch:
             await ch.send(f'<@{voter}> voted {score} for <@{target_id}>')
     await interaction.response.send_message(f'Your vote of {score} has been recorded.', ephemeral=True)
 
-# Scheduled task\ n@tasks.loop(minutes=30)
+# Scheduled task
+@tasks.loop(minutes=30)
 async def auto_post():
     now = datetime.now(UK_TZ)
     if now.hour < 12:
         return
-    # prune old
     active = get_active_players()
     for uid in list(ratings.keys()):
         if int(uid) not in active:
             ratings.pop(uid)
     save_json(RATINGS_FILE, ratings)
-    # post list
     if config.get('ratings_channel_id'):
         ch = bot.get_channel(config['ratings_channel_id'])
         if ch:
             await ch.send('Current players: ' + ', '.join(str(uid) for uid in active))
             for uid in active:
                 view = VoteView(uid)
-                await ch.send(f'Rate <@{uid}>'), view=view
-    # alerts & leaderboard omitted for brevity
+                await ch.send(f'Rate <@{uid}>', view=view)
 
 # User commands
 @bot.tree.command(name='myratings', description='Show your last 10 received ratings', guilds=[guild_obj()])
@@ -220,7 +211,7 @@ async def myratings(interaction: discord.Interaction):
 @bot.tree.command(name='showratings', description='Show your last 10 votes', guilds=[guild_obj()])
 async def showratings(interaction: discord.Interaction):
     sent = []
-    for _, recs in ratings.items():
+    for recs in ratings.values():
         for r in recs:
             if r['voter'] == interaction.user.id:
                 sent.append(r['score'])
