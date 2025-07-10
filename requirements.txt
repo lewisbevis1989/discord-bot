@@ -1,1 +1,1 @@
-pip install -r requirements.txt
+txt\n# requirements.txt\ndiscord.py>=2.4.0\npython-dotenv\npytz\n
