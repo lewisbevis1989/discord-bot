@@ -1,1 +1,3 @@
-txt\n# requirements.txt\ndiscord.py>=2.4.0\npython-dotenv\npytz\n
+discord.py>=2.4.0
+python-dotenv
+pytz
