@@ -2,203 +2,275 @@ import discord
 from discord.ext import commands, tasks
 from discord import app_commands
 import asyncio
+from datetime import datetime, timedelta
 import json
 import os
-from datetime import datetime, timedelta
-from dotenv import load_dotenv
+from typing import Dict, List, Tuple
 from pytz import timezone as pytz_timezone
+from dotenv import load_dotenv
 
-# Load environment variables
+########################
+#  🔧  CONFIGURATION   #
+########################
+
+DATA_DIR = "data"
+os.makedirs(DATA_DIR, exist_ok=True)
+
+RATINGS_FILE = os.path.join(DATA_DIR, "ratings.json")         # votes received
+NOTIFIED_FILE = os.path.join(DATA_DIR, "notified.json")       # low‑score alert flags
+CONFIG_FILE = os.path.join(DATA_DIR, "botconfig.json")        # admin‑set channel / VC ids
+
+# Default windows (can be tweaked in one place)
+RATING_POST_INTERVAL_MIN = 30
+RECENT_VOICE_WINDOW_HOURS = 2
+LEADERBOARD_WINDOW_HOURS = 24
+SHOW_RATINGS_LOOKBACK_HOURS = 72
+LOW_SCORE_THRESHOLD = 2.5
+LOW_SCORE_MIN_VOTES = 5
+
+# Sleep window (UK = Europe/London)
+SLEEP_START_HOUR_UK = 0   # 00:00
+SLEEP_END_HOUR_UK = 12    # 12:00
+
+########################
+#  🛠  UTILITIES       #
+########################
+
+def load_json(path: str, default):
+    try:
+        with open(path, "r", encoding="utf-8") as fp:
+            return json.load(fp)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return default
+
+def save_json(path: str, data):
+    with open(path, "w", encoding="utf-8") as fp:
+        json.dump(data, fp, indent=2)
+
+ratings: Dict[str, Dict[str, Tuple[int, str]]] = load_json(RATINGS_FILE, {})
+notified: Dict[str, str] = load_json(NOTIFIED_FILE, {})  # 'below' or 'ok'
+config: Dict[str, any] = load_json(CONFIG_FILE, {
+    "voice_channels": [],
+    "ratings_channel": None,
+    "leaderboard_channel": None,
+    "warnings_channel": None
+})
+
+voice_last_seen: Dict[str, str] = {}  # user_id -> ISO str timestamp
+
+def utc_now_iso() -> str:
+    return datetime.utcnow().isoformat()
+
+def iso_to_dt(s: str) -> datetime:
+    return datetime.fromisoformat(s)
+
+def within_hours(iso_time: str, hours: int) -> bool:
+    return datetime.utcnow() - iso_to_dt(iso_time) <= timedelta(hours=hours)
+
+uk_tz = pytz_timezone("Europe/London")
+
+def is_sleep_time() -> bool:
+    now_uk = datetime.now(uk_tz)
+    return SLEEP_START_HOUR_UK <= now_uk.hour < SLEEP_END_HOUR_UK
+
+def rating_average(user_id: str) -> Tuple[float, int]:
+    user_ratings = ratings.get(user_id, {})
+    if not user_ratings:
+        return (0.0, 0)
+    scores = [data[0] for data in user_ratings.values()]
+    return (sum(scores) / len(scores), len(scores))
+
+########################
+#  🤖  BOT SETUP       #
+########################
+
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
 GUILD_ID = int(os.getenv("GUILD_ID")) if os.getenv("GUILD_ID") else None
 
-# Timezone for UK
-UK_TZ = pytz_timezone('Europe/London')
-
-# File paths
-VOICE_SESSIONS_FILE = 'voice_sessions.json'
-RATINGS_FILE = 'ratings.json'
-CONFIG_FILE = 'config.json'
-
-# Helper to load/save JSON
-def load_json(path, default):
-    if os.path.exists(path):
-        with open(path, 'r') as f:
-            return json.load(f)
-    return default
-
-def save_json(path, data):
-    with open(path, 'w') as f:
-        json.dump(data, f, indent=2)
-
-# Load persistent data
-voice_sessions = load_json(VOICE_SESSIONS_FILE, {})
-ratings = load_json(RATINGS_FILE, {})
-config = load_json(CONFIG_FILE, {})
-
-# Bot setup
 intents = discord.Intents.default()
-intents.voice_states = True
+intents.message_content = True
 intents.members = True
-bot = commands.Bot(command_prefix='!', intents=intents)
+intents.voice_states = True
 
-def guild_obj():
-    return discord.Object(id=GUILD_ID) if GUILD_ID else None
+bot = commands.Bot(command_prefix="!", intents=intents)
+tree = bot.tree
 
-# Sync slash commands on ready
+########################
+#  📼  VOICE TRACKING   #
+########################
+
 @bot.event
-async def on_ready():
-    await bot.wait_until_ready()
-    if GUILD_ID:
-        await bot.tree.sync(guild=guild_obj())
-    print(f'Logged in as {bot.user} (ID: {bot.user.id})')
-    auto_post.start()
-
-# Check admin
-def is_admin(interaction: discord.Interaction) -> bool:
-    return interaction.user.guild_permissions.manage_guild
-
-# Register admin slash commands
-def register_admin_command(name, description):
-    def decorator(func):
-        return bot.tree.command(
-            name=name,
-            description=description,
-            guild=guild_obj()
-        )(app_commands.check(is_admin)(func))
-    return decorator
-
-@register_admin_command('set_ratings_channel', 'Set channel for rating posts')
-async def set_ratings_channel(interaction: discord.Interaction, channel: discord.TextChannel):
-    config['ratings_channel_id'] = channel.id
-    save_json(CONFIG_FILE, config)
-    await interaction.response.send_message(f'Ratings channel set to {channel.mention}', ephemeral=True)
-
-@register_admin_command('set_warnings_channel', 'Set channel for warnings')
-async def set_warnings_channel(interaction: discord.Interaction, channel: discord.TextChannel):
-    config['warnings_channel_id'] = channel.id
-    save_json(CONFIG_FILE, config)
-    await interaction.response.send_message(f'Warnings channel set to {channel.mention}', ephemeral=True)
-
-@register_admin_command('set_leaderboard_channel', 'Set channel for leaderboard')
-async def set_leaderboard_channel(interaction: discord.Interaction, channel: discord.TextChannel):
-    config['leaderboard_channel_id'] = channel.id
-    save_json(CONFIG_FILE, config)
-    await interaction.response.send_message(f'Leaderboard channel set to {channel.mention}', ephemeral=True)
-
-# Track voice sessions
-@bot.event
-async def on_voice_state_update(member, before, after):
-    now = datetime.now(UK_TZ).isoformat()
-    sessions = voice_sessions.setdefault(str(member.id), [])
-    if not before.channel and after.channel:
-        sessions.append({'join': now, 'leave': None, 'channel': after.channel.id})
-    elif before.channel and not after.channel:
-        for s in reversed(sessions):
-            if s['leave'] is None and s['channel'] == before.channel.id:
-                s['leave'] = now
-                break
-    save_json(VOICE_SESSIONS_FILE, voice_sessions)
-
-# Get players active in last 2h
-def get_active_players():
-    cutoff = datetime.now(UK_TZ) - timedelta(hours=2)
-    active = set()
-    for uid, sessions in voice_sessions.items():
-        for s in sessions:
-            join = datetime.fromisoformat(s['join'])
-            leave = datetime.fromisoformat(s['leave']) if s['leave'] else datetime.now(UK_TZ)
-            if join <= datetime.now(UK_TZ) and leave >= cutoff:
-                active.add(int(uid))
-                break
-    return active
-
-# Voting UI and logic
-class VoteView(discord.ui.View):
-    def __init__(self, target_id):
-        super().__init__(timeout=None)
-        self.target_id = target_id
-
-    @discord.ui.button(label='1', style=discord.ButtonStyle.danger, custom_id=lambda v: f'vote_1_{v.target_id}')
-    async def vote1(self, interaction, button):
-        await interaction.response.send_modal(ConfirmModal(self.target_id, 1))
-
-    @discord.ui.button(label='2', style=discord.ButtonStyle.primary, custom_id=lambda v: f'vote_2_{v.target_id}')
-    async def vote2(self, interaction, button):
-        await handle_vote(interaction, self.target_id, 2)
-
-    @discord.ui.button(label='3', style=discord.ButtonStyle.primary, custom_id=lambda v: f'vote_3_{v.target_id}')
-    async def vote3(self, interaction, button):
-        await handle_vote(interaction, self.target_id, 3)
-
-    @discord.ui.button(label='4', style=discord.ButtonStyle.primary, custom_id=lambda v: f'vote_4_{v.target_id}')
-    async def vote4(self, interaction, button):
-        await handle_vote(interaction, self.target_id, 4)
-
-    @discord.ui.button(label='5', style=discord.ButtonStyle.success, custom_id=lambda v: f'vote_5_{v.target_id}')
-    async def vote5(self, interaction, button):
-        await handle_vote(interaction, self.target_id, 5)
-
-class ConfirmModal(discord.ui.Modal, title='Confirm Rating'):
-    def __init__(self, target_id, score):
-        super().__init__()
-        self.target_id = target_id
-        self.score = score
-        self.add_item(discord.ui.InputText(label='Type CONFIRM to proceed', placeholder='CONFIRM'))
-
-    async def on_submit(self, interaction):
-        if self.children[0].value.upper() == 'CONFIRM':
-            await handle_vote(interaction, self.target_id, self.score)
-        else:
-            await interaction.response.send_message('Rating cancelled.', ephemeral=True)
-
-async def handle_vote(interaction, target_id, score):
-    voter = interaction.user.id
-    if voter == target_id:
-        return await interaction.response.send_message('You cannot vote for yourself.', ephemeral=True)
-    # Persist vote (overwrite previous by same voter)
-    lst = [r for r in ratings.get(str(target_id), []) if r['voter'] != voter]
-    lst.append({'voter': voter, 'score': score, 'time': datetime.now(UK_TZ).isoformat()})
-    ratings[str(target_id)] = lst
-    save_json(RATINGS_FILE, ratings)
-    await interaction.response.send_message(f'Your vote of {score} recorded.', ephemeral=True)
-
-# Scheduled posting every 30m
-@tasks.loop(minutes=30)
-async def auto_post():
-    now = datetime.now(UK_TZ)
-    if now.hour < 12:
+async def on_voice_state_update(member: discord.Member,
+                                before: discord.VoiceState,
+                                after: discord.VoiceState):
+    # Ignore if no VC configured
+    voice_ids = set(config["voice_channels"])
+    if not voice_ids:
         return
-    active = get_active_players()
-    # Clean old ratings
-    for uid in list(ratings.keys()):
-        if int(uid) not in active:
-            ratings.pop(uid)
+
+    # Was the member in or is now in a tracked VC?
+    def is_tracked(vc):
+        return vc and vc.channel and vc.channel.id in voice_ids
+
+    if is_tracked(before) or is_tracked(after):
+        voice_last_seen[str(member.id)] = utc_now_iso()
+        # Persist lazily
+        save_json(os.path.join(DATA_DIR, "voice_seen.json"), voice_last_seen)
+
+########################
+#  🗳  VOTING VIEWS     #
+########################
+
+class ConfirmOne(discord.ui.View):
+    def __init__(self, user_id: str, rater_id: str):
+        super().__init__(timeout=15)
+        self.user_id = user_id
+        self.rater_id = rater_id
+
+    @discord.ui.button(label="✅ Yes, give 1", style=discord.ButtonStyle.danger)
+    async def yes(self, interaction: discord.Interaction, _):
+        await record_vote(self.user_id, self.rater_id, 1)
+        await interaction.response.edit_message(content="✅ 1 recorded.", view=None)
+
+    @discord.ui.button(label="❌ Cancel", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: discord.Interaction, _):
+        await interaction.message.delete()
+
+async def record_vote(target_id: str, rater_id: str, score: int):
+    # Members cannot vote for themselves
+    if target_id == rater_id:
+        return
+    user_ratings = ratings.setdefault(target_id, {})
+    user_ratings[rater_id] = (score, utc_now_iso())
     save_json(RATINGS_FILE, ratings)
-    ch_id = config.get('ratings_channel_id')
-    if ch_id:
-        channel = bot.get_channel(ch_id)
-        if channel:
-            users = ', '.join(f'<@{u}>' for u in active)
-            await channel.send(f'Current players: {users}')
-            for u in active:
-                await channel.send(f'Rate <@{u}>', view=VoteView(u))
 
-# User slash commands
-@bot.tree.command(name='myratings', description='Show your last 10 received ratings', guild=guild_obj())
-async def myratings(interaction):
-    lst = ratings.get(str(interaction.user.id), [])[-10:]
-    if not lst:
-        return await interaction.response.send_message('No ratings available.', ephemeral=True)
-    await interaction.response.send_message('Your last ratings: ' + ', '.join(str(r['score']) for r in lst), ephemeral=True)
+    # announcement check
+    await check_low_score_alert(target_id)
 
-@bot.tree.command(name='showratings', description='Show your last 10 votes', guild=guild_obj())
-async def showratings(interaction):
-    sent = [r['score'] for recs in ratings.values() for r in recs if r['voter']==interaction.user.id]
-    if not sent:
-        return await interaction.response.send_message('No ratings sent.', ephemeral=True)
-    await interaction.response.send_message('Your votes: ' + ', '.join(str(s) for s in sent[-10:]), ephemeral=True)
+async def check_low_score_alert(user_id: str):
+    avg, count = rating_average(user_id)
+    status = notified.get(user_id, "ok")
+    channel_id = config.get("warnings_channel")
+    if not channel_id:
+        return
+    channel = bot.get_channel(channel_id)
+    if not channel:
+        return
 
-# Run bot
-bot.run(TOKEN)
+    # Falling below
+    if avg < LOW_SCORE_THRESHOLD and count >= LOW_SCORE_MIN_VOTES and status != "below":
+        await channel.send(f"⚠️ <@{user_id}>’s average plunged to {avg:.2f} ({count} votes) — please review.")
+        notified[user_id] = "below"
+        save_json(NOTIFIED_FILE, notified)
+
+    # Recovering above
+    if avg >= LOW_SCORE_THRESHOLD and status == "below":
+        await channel.send(f"✅ <@{user_id}> has recovered above {LOW_SCORE_THRESHOLD} (now {avg:.2f}) — nice turnaround!")
+        notified[user_id] = "ok"
+        save_json(NOTIFIED_FILE, notified)
+
+########################
+#  ⏲️  PERIODIC TASKS   #
+########################
+
+@tasks.loop(minutes=RATING_POST_INTERVAL_MIN)
+async def periodic_post_task():
+    if is_sleep_time():
+        return
+    guild = bot.get_guild(GUILD_ID) if GUILD_ID else None
+    if not guild:
+        return
+
+    ################# Build member list #################
+    recent_members: List[discord.Member] = []
+    for user_id, iso_ts in voice_last_seen.items():
+        if within_hours(iso_ts, RECENT_VOICE_WINDOW_HOURS):
+            member = guild.get_member(int(user_id))
+            if member:
+                recent_members.append(member)
+
+    if not recent_members:
+        return
+
+    ################# Ratings Channel #################
+    channel_id = config.get("ratings_channel")
+    if not channel_id:
+        return
+    channel = bot.get_channel(channel_id)
+    if not channel:
+        return
+
+    # Remove previous bot message to keep channel clean
+    async for msg in channel.history(limit=10):
+        if msg.author == bot.user:
+            try:
+                await msg.delete()
+            except discord.HTTPException:
+                pass
+
+    # Build view with buttons for each member
+    view = discord.ui.View(timeout=None)
+    for member in recent_members:
+        row = len(view.children) // 5  # each row holds 5 buttons
+        for score in range(1, 6):
+            style = discord.ButtonStyle.danger if score == 1 else discord.ButtonStyle.primary
+            label = f"{score}"
+            custom_id = f"rate:{member.id}:{score}"
+            view.add_item(discord.ui.Button(label=label, row=row, style=style, custom_id=custom_id))
+
+    member_lines = [member.mention for member in recent_members]
+    embed = discord.Embed(
+        title="🗳 Rate the Squad",
+        description="\n".join(member_lines),
+        color=discord.Color.blue()
+    )
+    await channel.send(embed=embed, view=view)
+
+    ################# Leaderboard Channel #################
+    lb_channel_id = config.get("leaderboard_channel")
+    if lb_channel_id:
+        lb_channel = bot.get_channel(lb_channel_id)
+        if lb_channel:
+            # Clear last bot message
+            async for msg in lb_channel.history(limit=10):
+                if msg.author == bot.user:
+                    try:
+                        await msg.delete()
+                    except discord.HTTPException:
+                        pass
+            cutoff = datetime.utcnow() - timedelta(hours=LEADERBOARD_WINDOW_HOURS)
+            board: List[Tuple[str, float]] = []
+            for user_id, votes in ratings.items():
+                # filter votes within window
+                recent_scores = [v[0] for v in votes.values() if iso_to_dt(v[1]) >= cutoff]
+                if recent_scores:
+                    avg = sum(recent_scores) / len(recent_scores)
+                    board.append((user_id, avg))
+            board.sort(key=lambda t: t[1], reverse=True)
+            lines = [f"{i+1}. <@{uid}> — {avg:.2f}" for i, (uid, avg) in enumerate(board[:20])]
+            embed_lb = discord.Embed(
+                title=f"🏆 Leaderboard – last {LEADERBOARD_WINDOW_HOURS} h",
+                description="\n".join(lines) if lines else "No data yet.",
+                color=discord.Color.gold()
+            )
+            await lb_channel.send(embed=embed_lb)
+
+@periodic_post_task.before_loop
+async def before_periodic():
+    await bot.wait_until_ready()
+
+periodic_post_task.start()
+
+########################
+#  🎛️  ADMIN COMMANDS   #
+########################
+
+def admin_check():
+    async def predicate(interaction: discord.Interaction):
+        return interaction.user.guild_permissions.administrator
+    return app_commands.check(predicate)
+
+@tree.command(name="setvoicechannels", description="Select voice channels for the bot to track")
+@admin_check()
+async def set_voice_channels(interaction: discord.Interaction, voice_channels: commands.Greedy[
