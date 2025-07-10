@@ -305,4 +305,4 @@ async def _set_warn(i: discord.Interaction, channel: discord.TextChannel):
 async def _add_vc(i: discord.Interaction, channel: discord.VoiceChannel):
     if channel.id not in config["voice_channels"]:
         config["voice_channels"].append(channel.id)
-        _save(CONFIG
+        _save(CONFIG_FILE, config
